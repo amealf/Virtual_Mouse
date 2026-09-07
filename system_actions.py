@@ -1,6 +1,5 @@
 from pathlib import Path
 import os
-import shutil
 import subprocess
 
 import numpy as np
@@ -40,14 +39,15 @@ class DesktopController:
 
 
 def find_codex_executable() -> Path | None:
-    command = shutil.which("codex")
-    if command:
-        return Path(command)
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
-        candidate = Path(local_app_data) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
-        if candidate.is_file():
-            return candidate
+        root = Path(local_app_data)
+        for candidate in (
+            root / "OpenAI" / "Codex" / "bin" / "codex.exe",
+            root / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
+        ):
+            if candidate.is_file():
+                return candidate
     return None
 
 

@@ -15,6 +15,7 @@ PROJECT_DIR = Path(__file__).resolve().parent
 MODEL_PATH = PROJECT_DIR / "hand_landmarker.task"
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
+PREVIEW_SIZE = (1600, 1200)
 SNAP_AUDIO_TOLERANCE = 0.30
 SNAP_LAUNCH_COOLDOWN = 3.0
 
@@ -138,6 +139,7 @@ def main() -> int:
                 if preview_opened and cv2.getWindowProperty("MediaPipe Gesture Controller", cv2.WND_PROP_VISIBLE) < 1:
                     break
                 draw_overlay(image, status, fingers, audio.available)
+                image = cv2.resize(image, PREVIEW_SIZE, interpolation=cv2.INTER_LINEAR)
                 cv2.imshow("MediaPipe Gesture Controller", image)
                 preview_opened = True
                 key = cv2.waitKey(1) & 0xFF

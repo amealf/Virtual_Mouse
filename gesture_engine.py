@@ -23,8 +23,9 @@ class GestureEngine:
     PINCH_RELEASE_RATIO = 0.48
     LEFT_CLICK_HOLD_SECONDS = 0.12
     RIGHT_CLICK_HOLD_SECONDS = 0.40
-    SNAP_MAX_SECONDS = 0.34
+    SNAP_MAX_SECONDS = 0.22
     SNAP_MIN_TRAVEL_RATIO = 0.32
+    SNAP_MIN_SPEED = 2.0
     SWIPE_WINDOW_SECONDS = 0.55
     SWIPE_MIN_DISTANCE = 0.22
     SWIPE_MIN_PALM_RATIO = 1.25
@@ -40,6 +41,8 @@ class GestureEngine:
         self._swipe_history: deque[tuple[float, float, float]] = deque()
         self._last_scroll_y: float | None = None
         self._last_click_time = -10.0
+        self._snap_history = deque()
+        self._last_snap_time = -10.0
 
     def update(self, landmarks, now: float) -> GestureFrame:
         finger_state = fingers_up(landmarks)
@@ -50,6 +53,7 @@ class GestureEngine:
 
         self._update_index_pinch(thumb_index_ratio, now, result)
         self._update_middle_pinch(thumb_middle_ratio, landmarks, scale, now, result)
+        self._update_snap(landmarks, scale, now, result)
         self._update_swipe(landmarks, finger_state, scale, now, result)
         self._update_scroll(landmarks, finger_state, result)
 
@@ -57,7 +61,12 @@ class GestureEngine:
             result.cursor = (landmarks[8][0], landmarks[8][1])
             result.status = "Move"
 
-        if result.left_click:
+        if result.visual_snap_time is not None:
+            result.left_click = result.right_click = False
+            result.cursor = None
+            result.scroll = 0
+            result.status = "Snap detected"
+        elif result.left_click:
             result.status = "Left click"
         elif result.right_click:
             result.status = "Right click"
@@ -77,6 +86,7 @@ class GestureEngine:
         self._middle_click_fired = False
         self._swipe_history.clear()
         self._last_scroll_y = None
+        self._snap_history.clear()
 
     def _update_index_pinch(self, ratio: float, now: float, result: GestureFrame) -> None:
         if ratio <= self.PINCH_CLOSE_RATIO:
@@ -115,19 +125,44 @@ class GestureEngine:
         if ratio < self.PINCH_RELEASE_RATIO or self._middle_pinch_started is None:
             return
 
-        duration = now - self._middle_pinch_started
-        start_point = self._middle_pinch_start_point or middle_tip
-        travel_ratio = distance(start_point, middle_tip) / scale
-        if (
-            not self._middle_click_fired
-            and duration <= self.SNAP_MAX_SECONDS
-            and travel_ratio >= self.SNAP_MIN_TRAVEL_RATIO
-        ):
-            result.visual_snap_time = now
-
         self._middle_pinch_started = None
         self._middle_pinch_start_point = None
         self._middle_click_fired = False
+
+    def _update_snap(self, landmarks, scale: float, now: float, result: GestureFrame) -> None:
+        # Express the fingertip in a palm-attached frame: whole-hand translation
+        # and in-plane rotation should not count as finger movement.
+        origin = landmarks[9]
+        axis_x = origin[0] - landmarks[0][0]
+        axis_y = origin[1] - landmarks[0][1]
+        length = (axis_x * axis_x + axis_y * axis_y) ** 0.5
+        if length < 1e-6:
+            self._snap_history.clear()
+            return
+        ux, uy = axis_x / length, axis_y / length
+        dx = (landmarks[12][0] - origin[0]) / scale
+        dy = (landmarks[12][1] - origin[1]) / scale
+        point = (dx * uy - dy * ux, dx * ux + dy * uy)
+        radius = distance(point, (0, 0))
+        near_thumb = distance(landmarks[4], landmarks[12]) / scale < 0.65
+        while self._snap_history and now - self._snap_history[0][0] > self.SNAP_MAX_SECONDS:
+            self._snap_history.popleft()
+        if now - self._last_snap_time >= 3.0:
+            for timestamp, old_point, old_radius, was_near_thumb in self._snap_history:
+                elapsed = now - timestamp
+                travel = distance(point, old_point)
+                # A fast inward middle-finger stroke, optionally beginning near
+                # the thumb. No exact contact frame or microphone is required.
+                if (elapsed >= 0.015
+                        and travel >= self.SNAP_MIN_TRAVEL_RATIO
+                        and travel / elapsed >= self.SNAP_MIN_SPEED
+                        and old_radius - radius >= 0.18
+                        and (was_near_thumb or old_radius >= 0.7)):
+                    result.visual_snap_time = now
+                    self._last_snap_time = now
+                    self._snap_history.clear()
+                    break
+        self._snap_history.append((now, point, radius, near_thumb))
 
     def _update_swipe(self, landmarks, fingers: list[int], scale: float, now: float, result: GestureFrame) -> None:
         if not all(fingers[1:]):

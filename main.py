@@ -5,7 +5,6 @@ import time
 import cv2
 import pyautogui
 
-from audio_snap import AudioSnapDetector
 from gesture_engine import GestureEngine
 from hand_tracker import HandTracker
 from system_actions import DesktopController, find_codex_executable, launch_codex
@@ -16,7 +15,6 @@ MODEL_PATH = PROJECT_DIR / "hand_landmarker.task"
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 PREVIEW_SIZE = (1600, 1200)
-SNAP_AUDIO_TOLERANCE = 0.30
 SNAP_LAUNCH_COOLDOWN = 3.0
 
 
@@ -30,13 +28,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def draw_overlay(image, status: str, fingers: list[int] | None, audio_available: bool) -> None:
+def draw_overlay(image, status: str, fingers: list[int] | None) -> None:
     height, width, _ = image.shape
     cv2.rectangle(image, (0, 0), (width, 84), (24, 24, 24), cv2.FILLED)
     cv2.putText(image, f"Gesture: {status}", (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.70, (91, 221, 255), 2)
     finger_text = "-" if fingers is None else "".join(str(value) for value in fingers)
     cv2.putText(image, f"Fingers: {finger_text}", (16, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (220, 220, 220), 1)
-    audio_text = "Snap audio: ready" if audio_available else "Snap audio: unavailable"
+    audio_text = "Snap: visual motion"
     cv2.putText(image, audio_text, (width - 270, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (170, 255, 170), 1)
     cv2.putText(image, "ESC/Q: emergency stop", (width - 270, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (170, 170, 255), 1)
     cv2.rectangle(image, (96, 96), (width - 96, height - 72), (255, 0, 255), 2)
@@ -66,13 +64,8 @@ def main() -> int:
     tracker = HandTracker(MODEL_PATH)
     gestures = GestureEngine()
     desktop = DesktopController()
-    audio = AudioSnapDetector()
-    audio.start()
-    if audio.error:
-        print(f"Microphone unavailable: {audio.error}")
-
-    pending_visual_snap: float | None = None
     last_codex_launch = -10.0
+    snap_feedback_until = 0.0
     status = "Waiting for hand"
     fingers: list[int] | None = None
     started = time.monotonic()
@@ -118,27 +111,22 @@ def main() -> int:
                 if frame.scroll and not args.preview_only:
                     desktop.scroll(frame.scroll)
                 if frame.visual_snap_time is not None:
-                    pending_visual_snap = frame.visual_snap_time
+                    snap_feedback_until = now + 1.0
+                    if not args.preview_only and now - last_codex_launch >= SNAP_LAUNCH_COOLDOWN:
+                        last_codex_launch = now
+                        launched, message = launch_codex()
+                        print(message)
                 if frame.exit_requested and not args.preview_only:
                     print("Horizontal swipe detected. Exiting gesture controller.")
                     break
 
-            if pending_visual_snap is not None:
-                if audio.consume_near(pending_visual_snap, SNAP_AUDIO_TOLERANCE):
-                    if not args.preview_only and now - last_codex_launch >= SNAP_LAUNCH_COOLDOWN:
-                        launched, message = launch_codex()
-                        print(message)
-                        if launched:
-                            last_codex_launch = now
-                            status = "Codex launched"
-                    pending_visual_snap = None
-                elif now - pending_visual_snap > SNAP_AUDIO_TOLERANCE:
-                    pending_visual_snap = None
+            if now < snap_feedback_until:
+                status = "Snap detected"
 
             if not args.headless:
                 if preview_opened and cv2.getWindowProperty("MediaPipe Gesture Controller", cv2.WND_PROP_VISIBLE) < 1:
                     break
-                draw_overlay(image, status, fingers, audio.available)
+                draw_overlay(image, status, fingers)
                 image = cv2.resize(image, PREVIEW_SIZE, interpolation=cv2.INTER_LINEAR)
                 cv2.imshow("MediaPipe Gesture Controller", image)
                 preview_opened = True
@@ -151,7 +139,7 @@ def main() -> int:
             if args.test_seconds > 0 and now - started >= args.test_seconds:
                 if args.snapshot:
                     if args.headless:
-                        draw_overlay(image, status, fingers, audio.available)
+                        draw_overlay(image, status, fingers)
                     if not cv2.imwrite(str(args.snapshot), image):
                         raise RuntimeError("Could not save preview snapshot")
                 break
@@ -160,7 +148,6 @@ def main() -> int:
     except pyautogui.FailSafeException:
         print("PyAutoGUI fail-safe activated. Gesture controller stopped.")
     finally:
-        audio.close()
         tracker.close()
         camera.release()
         cv2.destroyAllWindows()

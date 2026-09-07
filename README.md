@@ -14,7 +14,7 @@ A local Windows gesture controller based on the upstream Virtual_Mouse project.
 | Move an open palm quickly left or right | Exit this controller |
 | Press `Esc` or `Q`, or move the pointer to the top-left corner | Emergency stop |
 
-Finger snapping uses both the visible finger motion and a short microphone transient. This prevents ordinary hand motion or a random sound from launching Codex by itself.
+Finger snapping uses rapid inward movement of the middle fingertip relative to the palm. Sound is not required, and the controller does not open the microphone. Recognition thresholds still need real-user testing.
 
 ## Install
 

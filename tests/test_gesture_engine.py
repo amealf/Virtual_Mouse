@@ -53,6 +53,15 @@ class GestureEngineTests(unittest.TestCase):
         engine._update_snap(moved, 0.2, 1.1, result)
         self.assertIsNone(result.visual_snap_time)
 
+    def test_small_radial_change_is_not_snap(self):
+        engine = GestureEngine()
+        first = self.snap_hand(0.30)
+        second = self.snap_hand(0.335)
+        engine._update_snap(first, 0.2, 1.0, GestureFrame([]))
+        result = GestureFrame([])
+        engine._update_snap(second, 0.2, 1.08, result)
+        self.assertIsNone(result.visual_snap_time)
+
     def test_slow_finger_folding_is_not_snap(self):
         engine = GestureEngine()
         for i in range(11):
@@ -84,6 +93,24 @@ class GestureEngineTests(unittest.TestCase):
         engine._update_swipe(landmarks_with_center(0.50, 0.5), fingers, 0.10, 3.4, result)
 
         self.assertTrue(result.exit_requested)
+
+    def test_swipe_can_cross_one_missing_frame_when_motion_is_preserved(self):
+        engine = GestureEngine()
+        fingers = [1, 1, 1, 1, 1]
+        engine._update_swipe(landmarks_with_center(0.20, 0.5), fingers, 0.10, 3.0, GestureFrame(fingers))
+        engine.reset(preserve_motion=True)
+        result = GestureFrame(fingers)
+        engine._update_swipe(landmarks_with_center(0.50, 0.5), fingers, 0.10, 3.13, result)
+        self.assertTrue(result.exit_requested)
+
+    def test_open_palm_middle_pinch_does_not_right_click(self):
+        engine = GestureEngine()
+        landmarks = landmarks_with_center(0.5, 0.5)
+        open_palm = [1, 1, 1, 1, 1]
+        engine._update_middle_pinch(0.2, landmarks, 0.2, 1.0, GestureFrame(open_palm), fingers=open_palm)
+        result = GestureFrame(open_palm)
+        engine._update_middle_pinch(0.2, landmarks, 0.2, 1.5, result, fingers=open_palm)
+        self.assertFalse(result.right_click)
 
 
 if __name__ == "__main__":

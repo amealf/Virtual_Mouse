@@ -10,4 +10,4 @@ if not exist "%PYTHON_EXE%" (
     exit /b 1
 )
 
-"%PYTHON_EXE%" "%APP_DIR%main.py" %*
+"%PYTHON_EXE%" "%APP_DIR%desktop_app.py" %*

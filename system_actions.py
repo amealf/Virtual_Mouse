@@ -51,12 +51,18 @@ def find_codex_executable() -> Path | None:
     return None
 
 
-def launch_codex() -> tuple[bool, str]:
-    executable = find_codex_executable()
+def launch_program(executable: Path | None) -> tuple[bool, str]:
     if executable is None:
-        return False, "Codex executable was not found."
+        return False, "请先在控制界面选择要打开的程序。"
+    if executable.suffix.lower() != '.exe' or not executable.is_file():
+        return False, "程序路径无效，请重新选择 .exe 文件。"
     try:
-        subprocess.Popen([str(executable)], close_fds=True)
-        return True, f"Codex launched from {executable}"
+        subprocess.Popen([str(executable)], cwd=str(executable.parent), close_fds=True)
+        return True, f"已打开 {executable.name}"
     except OSError as exc:
-        return False, f"Could not launch Codex: {exc}"
+        return False, f"程序未能打开：{exc}"
+
+
+def launch_codex(executable: Path | None = None) -> tuple[bool, str]:
+    """Legacy command-line runner; the desktop panel uses launch_program."""
+    return launch_program(executable or find_codex_executable())

@@ -15,7 +15,7 @@ from PIL import Image, ImageTk
 from camera_session import CameraSession
 from native_services import SingleInstance, HotkeyListener, TrayController, tray_image
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 PROJECT_DIR = Path(__file__).resolve().parent
 BG = '#f3f5f7'
 SURFACE = '#ffffff'
@@ -24,6 +24,22 @@ SOFT = '#eaf1f0'
 INK = '#172532'
 MUTED = '#526273'
 ACCENT = '#087969'
+THEMES = {
+    'light': {
+        'bg': '#f3f5f7', 'sidebar': '#edf3f3', 'surface': '#ffffff',
+        'canvas': '#eaf1f0', 'input': '#ffffff', 'line': '#d9e2e5',
+        'soft': '#e2efed', 'ink': '#172532', 'muted': '#526273',
+        'accent': '#087969', 'accent_active': '#056356',
+        'on_accent': '#ffffff', 'danger': '#a24925', 'disabled': '#7b898e',
+    },
+    'dark': {
+        'bg': '#131a1d', 'sidebar': '#182326', 'surface': '#1e292d',
+        'canvas': '#1a2529', 'input': '#202f33', 'line': '#344348',
+        'soft': '#263b3d', 'ink': '#e6eeee', 'muted': '#a7b7ba',
+        'accent': '#41b9a4', 'accent_active': '#63cbb8',
+        'on_accent': '#10201e', 'danger': '#efae99', 'disabled': '#708186',
+    },
+}
 STATUS = {'off': '相机已关闭', 'starting': '正在打开相机…', 'on': '相机使用中',
           'stopping': '正在释放相机…', 'error': '相机异常，请查看提示'}
 GESTURES = {'Tracking': '已找到手，请做手势', 'Waiting for hand': '等待手进入画面',
@@ -44,6 +60,11 @@ class DesktopApp:
         self.background_camera = tk.BooleanVar(value=settings.get('background_camera', False))
         self.mouse_enabled = tk.BooleanVar(value=settings.get('mouse_enabled', False))
         self.program_path = tk.StringVar(value=settings.get('program_path', ''))
+        self.theme_var = tk.StringVar(value=settings.get('theme', 'light'))
+        self.theme_name = self.theme_var.get() if self.theme_var.get() in THEMES else 'light'
+        self.palette = dict(THEMES[self.theme_name])
+        self._theme_widgets = {}
+        self._setting_traces = []
         self.photo = None
         self.closing = False
         self.last_state = None
@@ -52,6 +73,10 @@ class DesktopApp:
         self.tray_ok = True
         self.exit_watchdog = None
         self._build()
+        for setting in (self.camera_index, self.preview_only, self.auto_off,
+                        self.background_camera, self.mouse_enabled, self.program_path,
+                        self.theme_var):
+            self._setting_traces.append(setting.trace_add('write', self._setting_changed))
         self.hotkeys = HotkeyListener(self.commands)
         self.tray = TrayController(self.commands)
         self.hotkeys.start()
@@ -72,9 +97,11 @@ class DesktopApp:
                 return {}
             camera = data.get('camera_index', 0)
             program = data.get('program_path', data.get('codex_path', ''))
+            saved_theme = data.get('theme')
             return {
                 'camera_index': camera if type(camera) is int and 0 <= camera <= 9 else 0,
                 'program_path': program if isinstance(program, str) else '',
+                'theme': saved_theme if isinstance(saved_theme, str) and saved_theme in THEMES else 'light',
                 **{key: data.get(key) is True for key in ('preview_only', 'auto_off', 'background_camera', 'mouse_enabled')},
             }
         except (OSError, ValueError):
@@ -90,171 +117,447 @@ class DesktopApp:
                 'auto_off': self.auto_off.get(), 'program_path': self.program_path.get(),
                 'background_camera': self.background_camera.get(),
                 'mouse_enabled': self.mouse_enabled.get(),
+                'theme': self.theme_name,
             }, ensure_ascii=False, indent=2), encoding='utf-8')
         except (OSError, tk.TclError) as exc:
             self.log(f'设置未能保存：{exc}')
 
-    def label(self, parent, text, size=11, color=INK, **kwargs):
-        return tk.Label(parent, text=text, bg=parent.cget('bg'), fg=color,
-                        font=('Microsoft YaHei UI', size), anchor='w', **kwargs)
+    def _theme_widget(self, widget, bg_role=None, fg_role=None):
+        """Register a Tk widget so a theme change updates it in place."""
+        self._theme_widgets[widget] = (bg_role, fg_role)
+        self._apply_widget_theme(widget, bg_role, fg_role)
+        return widget
 
-    def scroll_page(self, notebook, title):
-        page = tk.Frame(notebook, bg=SURFACE)
-        notebook.add(page, text=title)
-        canvas = tk.Canvas(page, bg=SURFACE, highlightthickness=0)
+    def _apply_widget_theme(self, widget, bg_role=None, fg_role=None):
+        try:
+            options = {}
+            if bg_role:
+                options['bg'] = self.palette[bg_role]
+            if fg_role:
+                options['fg'] = self.palette[fg_role]
+            if isinstance(widget, tk.Button):
+                options.update(activebackground=self.palette['soft'],
+                               activeforeground=self.palette['ink'],
+                               disabledforeground=self.palette['disabled'])
+            if options:
+                widget.configure(**options)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def label(self, parent, text, size=11, color=None, bg_role='surface', fg_role=None, **kwargs):
+        if fg_role is None:
+            if color in (MUTED, self.palette.get('muted')):
+                fg_role = 'muted'
+            elif color in (self.palette.get('accent'), ACCENT):
+                fg_role = 'accent'
+            else:
+                fg_role = 'ink'
+        widget = tk.Label(parent, text=text, bg=self.palette[bg_role], fg=self.palette[fg_role],
+                          font=('Microsoft YaHei UI', size), anchor='w', **kwargs)
+        return self._theme_widget(widget, bg_role, fg_role)
+
+    def wrap_label(self, widget):
+        widget.bind('<Configure>', lambda e: widget.configure(wraplength=max(1, e.width - self._u(4))))
+        return widget
+
+    def _is_descendant(self, widget, ancestor):
+        while widget is not None:
+            if widget is ancestor:
+                return True
+            widget = getattr(widget, 'master', None)
+        return False
+
+    def scroll_page(self, page):
+        """Create a scrollable content area without a notebook or duplicate page."""
+        canvas = tk.Canvas(page, bg=self.palette['bg'], highlightthickness=0)
         bar = ttk.Scrollbar(page, orient='vertical', command=canvas.yview)
         canvas.configure(yscrollcommand=bar.set)
         canvas.pack(side='left', fill='both', expand=True)
-        content = tk.Frame(canvas, bg=SURFACE)
+        bar.pack(side='right', fill='y')
+        content = tk.Frame(canvas, bg=self.palette['bg'])
+        self._theme_widget(canvas, 'bg')
+        self._theme_widget(content, 'bg')
         item = canvas.create_window(0, 0, window=content, anchor='nw')
 
         def resize(_=None):
             canvas.itemconfigure(item, width=canvas.winfo_width())
             canvas.configure(scrollregion=canvas.bbox('all'))
-            if content.winfo_reqheight() > canvas.winfo_height():
-                bar.pack(side='right', fill='y')
-            else:
-                bar.pack_forget()
-                canvas.yview_moveto(0)
 
         canvas.bind('<Configure>', resize)
         content.bind('<Configure>', resize)
 
         def wheel(event):
-            widget = event.widget
-            while widget is not None:
-                if widget is page:
-                    canvas.yview_scroll(round(-event.delta / 120), 'units')
-                    break
-                widget = getattr(widget, 'master', None)
+            if self._is_descendant(event.widget, page):
+                delta = round(-event.delta / 120) or (-1 if event.delta > 0 else 1)
+                canvas.yview_scroll(delta, 'units')
 
-        self.root.bind('<MouseWheel>', wheel, add='+')
+        self.root.bind_all('<MouseWheel>', wheel, add='+')
         return content
+
+    def _configure_styles(self):
+        """Apply the current semantic palette to ttk widgets."""
+        c = self.palette
+        p = self._u
+        style = self.style
+        style.configure('TButton', font=('Microsoft YaHei UI', 10), padding=(p(14), p(9)),
+                        background=c['surface'], foreground=c['ink'], bordercolor=c['line'],
+                        lightcolor=c['surface'], darkcolor=c['surface'], focusthickness=0)
+        style.map('TButton', background=[('active', c['soft']), ('disabled', c['bg'])],
+                  foreground=[('disabled', c['disabled'])])
+        style.configure('Accent.TButton', foreground=c['on_accent'], background=c['accent'],
+                        font=('Microsoft YaHei UI', 12), borderwidth=0, padding=(p(16), p(12)),
+                        focusthickness=0)
+        style.map('Accent.TButton', background=[('disabled', c['disabled']), ('active', c['accent_active'])],
+                  foreground=[('disabled', c['on_accent']), ('active', c['on_accent'])])
+        style.configure('TCheckbutton', background=c['surface'], foreground=c['ink'],
+                        font=('Microsoft YaHei UI', 10), padding=(0, p(6)), indicatorsize=p(15),
+                        indicatormargin=(0, 0, p(8), 0))
+        style.map('TCheckbutton', background=[('active', c['surface']), ('disabled', c['surface'])],
+                  foreground=[('disabled', c['disabled'])])
+        style.configure('Settings.TCheckbutton', background=c['bg'], foreground=c['ink'],
+                        font=('Microsoft YaHei UI', 10), padding=(0, p(6)), indicatorsize=p(15),
+                        indicatormargin=(0, 0, p(8), 0))
+        style.map('Settings.TCheckbutton', background=[('active', c['bg']), ('disabled', c['bg'])],
+                  foreground=[('disabled', c['disabled'])])
+        style.configure('Theme.TRadiobutton', background=c['bg'], foreground=c['ink'],
+                        font=('Microsoft YaHei UI', 10), padding=(0, p(5)), indicatorsize=p(15))
+        style.map('Theme.TRadiobutton', background=[('active', c['bg'])],
+                  foreground=[('disabled', c['disabled'])])
+        style.configure('TSpinbox', font=('Microsoft YaHei UI', 10), padding=p(5), bordercolor=c['line'],
+                        fieldbackground=c['input'], foreground=c['ink'], arrowsize=p(14),
+                        insertcolor=c['ink'])
+        style.map('TSpinbox', fieldbackground=[('disabled', c['soft'])],
+                  foreground=[('disabled', c['disabled'])])
+        style.configure('TEntry', padding=p(8), bordercolor=c['line'], lightcolor=c['input'],
+                        darkcolor=c['input'], fieldbackground=c['input'], foreground=c['ink'])
+        style.map('TEntry', fieldbackground=[('disabled', c['soft'])],
+                  foreground=[('disabled', c['disabled'])])
+        style.configure('TScrollbar', background=c['line'], troughcolor=c['bg'], bordercolor=c['bg'],
+                        arrowcolor=c['muted'], lightcolor=c['line'], darkcolor=c['line'])
+
+    def _u(self, value):
+        return round(value * self.scale)
+
+    def _setting_changed(self, *_):
+        if self.closing:
+            return
+        if self.theme_var.get() in THEMES and self.theme_var.get() != self.theme_name:
+            self.apply_theme(self.theme_var.get(), save=False)
+        if hasattr(self, 'program_summary'):
+            self._update_program_summary()
+        self.save_settings()
+
+    def apply_theme(self, name=None, save=True):
+        """Switch palette in place; CameraSession, tray and hotkeys are untouched."""
+        name = name or self.theme_var.get()
+        if name not in THEMES:
+            name = 'light'
+        self.theme_name = name
+        self.palette = dict(THEMES[name])
+        self._configure_styles()
+        try:
+            self.root.configure(bg=self.palette['bg'])
+            for widget, (bg_role, fg_role) in tuple(self._theme_widgets.items()):
+                if widget.winfo_exists():
+                    self._apply_widget_theme(widget, bg_role, fg_role)
+        except (tk.TclError, RuntimeError):
+            pass
+        self._update_nav_buttons()
+        if hasattr(self, 'state_label'):
+            state = self.last_state or 'off'
+            state_color = self.palette['accent'] if state == 'on' else self.palette['danger'] if state == 'error' else self.palette['muted']
+            state_text = '●  ' + STATUS.get(state, state)
+            self.state_label.config(text=state_text, fg=state_color)
+            if hasattr(self, 'nav_state_label'):
+                self.nav_state_label.config(text=state_text, fg=state_color)
+        if hasattr(self, 'program_summary'):
+            self._update_program_summary()
+        if hasattr(self, 'canvas') and self.last_state != 'on' and self.current_page == 'home':
+            self.render_empty()
+        if save:
+            self.save_settings()
+
+    def _new_frame(self, parent, role='surface', **kwargs):
+        return self._theme_widget(tk.Frame(parent, bg=self.palette[role], **kwargs), role)
+
+    def _new_separator(self, parent, role='line', **kwargs):
+        return self._theme_widget(tk.Frame(parent, bg=self.palette[role], height=1, **kwargs), role)
 
     def _build(self):
         root = self.root
         root.title(f'手势控制器 · {VERSION}')
         self.app_icon = ImageTk.PhotoImage(tray_image(True))
         root.iconphoto(True, self.app_icon)
-        root.configure(bg=BG)
         self.scale = max(1.0, root.winfo_fpixels('1i') / 96.0)
-        p = lambda value: round(value * self.scale)
-        width = min(p(1400), root.winfo_screenwidth() - p(80))
-        height = min(p(920), root.winfo_screenheight() - p(100))
-        root.geometry(f'{width}x{height}+40+40')
-        root.minsize(min(width, p(960)), min(height, p(740)))
-        style = ttk.Style(root)
-        style.theme_use('clam')
-        style.configure('TButton', font=('Microsoft YaHei UI', 10), padding=(p(16), p(10)),
-                        background=SURFACE, foreground=INK, bordercolor=LINE, lightcolor=SURFACE, darkcolor=SURFACE)
-        style.map('TButton', background=[('active', SOFT), ('disabled', BG)], foreground=[('disabled', '#7b898e')])
-        style.configure('Accent.TButton', foreground='white', background=ACCENT,
-                        font=('Microsoft YaHei UI', 12), borderwidth=0, padding=(p(16), p(14)))
-        style.map('Accent.TButton', background=[('disabled', '#778993'), ('active', '#056356')],
-                  foreground=[('disabled', 'white'), ('active', 'white')])
-        style.configure('TCheckbutton', background=SURFACE, font=('Microsoft YaHei UI', 10),
-                        padding=(0, p(6)), indicatorsize=p(15), indicatormargin=(0, 0, p(8), 0))
-        style.map('TCheckbutton', background=[('active', SURFACE)], foreground=[('disabled', '#7b898e')])
-        style.configure('TSpinbox', font=('Microsoft YaHei UI', 10), padding=p(5), bordercolor=LINE, arrowsize=p(14))
-        style.configure('TEntry', padding=p(8), bordercolor=LINE, lightcolor=SURFACE, darkcolor=SURFACE)
-        style.configure('TNotebook', background=SURFACE, borderwidth=0)
-        style.configure('TNotebook.Tab', font=('Microsoft YaHei UI', 10), padding=(p(20), p(10)), background=BG)
-        style.map('TNotebook.Tab', background=[('selected', SURFACE)], foreground=[('selected', ACCENT)],
-                  padding=[('selected', (p(20), p(10)))])
+        p = self._u
+        root.configure(bg=self.palette['bg'])
+        width = min(p(1280), root.winfo_screenwidth() - p(72))
+        height = min(p(820), root.winfo_screenheight() - p(88))
+        root.geometry(f'{width}x{height}+36+36')
+        root.minsize(min(p(1000), width), min(p(720), height))
+        self.style = ttk.Style(root)
+        self.style.theme_use('clam')
+        self._configure_styles()
 
-        header = tk.Frame(root, bg=BG)
-        header.pack(fill='x', padx=p(28), pady=(p(24), p(24)))
-        heading = tk.Frame(header, bg=BG)
-        heading.pack(side='left')
-        self.label(heading, '手势控制器', 22).pack(anchor='w')
-        self.label(heading, '本地识别，相机由你掌控。', 10, MUTED).pack(anchor='w', pady=(p(4), 0))
-        ttk.Button(header, text='退出程序', command=self.quit).pack(side='right')
-        ttk.Button(header, text='关闭相机并收起', command=self.hide).pack(side='right', padx=p(12))
-
-        body = tk.Frame(root, bg=BG)
-        body.pack(fill='both', expand=True, padx=p(28))
-        body.columnconfigure(0, weight=1)
-        body.rowconfigure(0, weight=1)
-        viewer = tk.Frame(body, bg=SURFACE)
-        viewer.grid(row=0, column=0, sticky='nsew', padx=(0, p(20)))
-        strip = tk.Frame(viewer, bg=SURFACE)
-        strip.pack(fill='x', padx=p(24), pady=p(20))
-        self.label(strip, '实时预览', 14).pack(side='left')
-        self.state_label = self.label(strip, '●  相机已关闭', 10, MUTED)
-        self.state_label.pack(side='right')
-        self.canvas = tk.Canvas(viewer, bg=SOFT, highlightthickness=0)
-        self.canvas.pack(fill='both', expand=True, padx=p(16))
-        self.canvas.bind('<Configure>', lambda _: self.render_empty() if self.last_state != 'on' else None)
-        self.label(viewer, '识别反馈', 9, MUTED).pack(fill='x', padx=p(24), pady=(p(20), p(4)))
-        self.feedback = self.label(viewer, '按 Ctrl+Alt+G 开始，使用后再按一次关闭。', 12)
-        self.feedback.pack(fill='x', padx=p(24), pady=(0, p(20)))
-        self.feedback.bind('<Configure>', lambda e: self.feedback.config(wraplength=e.width))
-
-        sidebar = tk.Frame(body, bg=SURFACE, width=p(340))
-        sidebar.grid(row=0, column=1, sticky='ns')
+        root.grid_rowconfigure(0, weight=1)
+        root.grid_columnconfigure(0, minsize=p(184), weight=0)
+        root.grid_columnconfigure(1, weight=1)
+        sidebar = self._new_frame(root, 'sidebar', width=p(184))
+        sidebar.grid(row=0, column=0, sticky='nsew')
         sidebar.pack_propagate(False)
-        power = tk.Frame(sidebar, bg=SURFACE)
-        power.pack(fill='x', padx=p(20), pady=(p(20), p(16)))
-        self.label(power, '相机控制', 14).pack(anchor='w', pady=(0, p(12)))
-        self.toggle_button = ttk.Button(power, text='开启相机', style='Accent.TButton', command=self.toggle)
-        self.toggle_button.pack(fill='x')
-        self.label(power, 'Ctrl + Alt + G  随时开启 / 关闭', 10, MUTED).pack(anchor='w', pady=(p(10), 0))
-        tabs = ttk.Notebook(sidebar)
-        tabs.pack(fill='both', expand=True)
-        side = self.scroll_page(tabs, '控制')
-        guide = self.scroll_page(tabs, '手势速查')
-        side.columnconfigure(0, weight=1)
-        self.label(side, '使用方式', 11).grid(row=0, column=0, sticky='w', padx=p(20), pady=(p(20), p(4)))
-        self.preview_check = ttk.Checkbutton(side, text='仅预览手势，不控制电脑', variable=self.preview_only)
-        self.preview_check.grid(row=1, column=0, sticky='w', padx=p(20))
-        self.auto_check = ttk.Checkbutton(side, text='响指或点击成功后关闭相机', variable=self.auto_off)
-        self.auto_check.grid(row=2, column=0, sticky='w', padx=p(20))
-        self.background_check = ttk.Checkbutton(side, text='允许后台使用相机', variable=self.background_camera,
-                                               command=self.save_settings)
-        self.background_check.grid(row=3, column=0, sticky='w', padx=p(20))
-        self.mouse_check = ttk.Checkbutton(side, text='启用鼠标操作（实验性）', variable=self.mouse_enabled)
-        self.mouse_check.grid(row=4, column=0, sticky='w', padx=p(20))
-        options = tk.Frame(side, bg=SURFACE)
-        options.grid(row=5, column=0, sticky='ew', padx=p(20), pady=p(16))
-        self.label(options, '摄像头编号', 10).pack(side='left')
-        self.camera_input = ttk.Spinbox(options, from_=0, to=9, width=4, textvariable=self.camera_index)
-        self.camera_input.pack(side='right')
-        tk.Frame(side, bg=LINE, height=1).grid(row=6, column=0, sticky='ew', padx=p(20), pady=(0, p(16)))
-        self.label(side, '响指打开的程序', 11).grid(row=7, column=0, sticky='w', padx=p(20))
-        self.path_entry = ttk.Entry(side, textvariable=self.program_path, font=('Microsoft YaHei UI', 9))
-        self.path_entry.grid(row=8, column=0, sticky='ew', padx=p(20), pady=p(8))
-        self.browse_button = ttk.Button(side, text='选择程序 .exe', command=self.choose_program)
-        self.browse_button.grid(row=9, column=0, sticky='ew', padx=p(20))
-        self.label(side, 'Ctrl + Alt + H  显示窗口\nEsc  关闭相机（窗口内）', 10, MUTED, justify='left').grid(row=10, column=0, sticky='w', padx=p(20), pady=p(20))
+        main = self._new_frame(root, 'bg')
+        main.grid(row=0, column=1, sticky='nsew')
+        main.grid_rowconfigure(0, weight=1)
+        main.grid_columnconfigure(0, weight=1)
 
-        for action, gesture in (('移动鼠标', '只伸出食指'), ('左键 / 右键', '拇指捏合食指 / 中指，其他指收起'), ('上下滚动', '食指、中指伸出，上下移动'), ('打开自选程序', '中指快速弹动，做出响指'), ('退出程序', '张开手掌，快速向左或右横扫')):
-            row = tk.Frame(guide, bg=SURFACE)
-            row.pack(fill='x', padx=p(20), pady=(p(16), 0))
-            self.label(row, action, 11).pack(anchor='w')
-            self.label(row, gesture, 10, MUTED, wraplength=p(280), justify='left').pack(anchor='w', pady=(p(4), 0))
-        self.label(guide, '每次使用一只手。\n响指无需声音，挥手会退出程序。', 10, MUTED, justify='left').pack(anchor='w', padx=p(20), pady=p(20))
+        brand = self._new_frame(sidebar, 'sidebar')
+        brand.pack(fill='x', padx=p(20), pady=(p(28), p(34)))
+        brand_line = self._new_frame(brand, 'sidebar')
+        brand_line.pack(fill='x')
+        self.label(brand_line, '◉', 18, fg_role='accent', bg_role='sidebar').pack(side='left', padx=(0, p(8)))
+        self.label(brand_line, '手势控制器', 12, fg_role='ink', bg_role='sidebar').pack(side='left')
+        self.label(brand, '本地运行 · 隐私可控', 9, fg_role='muted', bg_role='sidebar').pack(anchor='w', pady=(p(8), 0))
 
-        footer = tk.Frame(root, bg=BG)
-        footer.pack(fill='x', padx=p(28), pady=(p(16), p(20)))
-        self.notice = self.label(footer, '准备就绪 · 不录音 · 不保存相机画面', 10, MUTED)
+        self.nav_buttons = {}
+        for key, text in (('home', '控制台'), ('guide', '手势指南'), ('settings', '设置')):
+            button = tk.Button(sidebar, text=text, anchor='w', relief='flat', bd=0,
+                               highlightthickness=0, font=('Microsoft YaHei UI', 10),
+                               padx=p(18), pady=p(10), command=lambda page=key: self.show_page(page))
+            button.pack(fill='x', padx=p(10), pady=p(2))
+            self._theme_widget(button, 'sidebar', 'ink')
+            self.nav_buttons[key] = button
+
+        nav_bottom = self._new_frame(sidebar, 'sidebar')
+        nav_bottom.pack(side='bottom', fill='x', padx=p(10), pady=(p(10), p(20)))
+        self._new_separator(nav_bottom, 'line').pack(fill='x', pady=(0, p(12)))
+        self.nav_state_label = self.label(nav_bottom, '●  相机已关闭', 9,
+                                          fg_role='muted', bg_role='sidebar')
+        self.nav_state_label.pack(anchor='w', padx=p(8), pady=(0, p(8)))
+        tray_button = tk.Button(nav_bottom, text='关闭相机并收起', anchor='w', relief='flat', bd=0,
+                                highlightthickness=0, font=('Microsoft YaHei UI', 9),
+                                padx=p(8), pady=p(8), command=self.hide)
+        tray_button.pack(fill='x')
+        self._theme_widget(tray_button, 'sidebar', 'muted')
+        quit_button = tk.Button(nav_bottom, text='退出程序', anchor='w', relief='flat', bd=0,
+                                highlightthickness=0, font=('Microsoft YaHei UI', 9),
+                                padx=p(8), pady=p(8), command=self.quit)
+        quit_button.pack(fill='x')
+        self._theme_widget(quit_button, 'sidebar', 'muted')
+
+        self.page_container = self._new_frame(main, 'bg')
+        self.page_container.grid(row=0, column=0, sticky='nsew')
+        self.page_container.grid_rowconfigure(0, weight=1)
+        self.page_container.grid_columnconfigure(0, weight=1)
+        self.pages = {}
+
+        home = self._new_frame(self.page_container, 'bg')
+        home.grid(row=0, column=0, sticky='nsew', padx=p(32), pady=p(28))
+        home.grid_rowconfigure(1, weight=1)
+        home.grid_columnconfigure(0, weight=1)
+        self.pages['home'] = home
+        top = self._new_frame(home, 'bg')
+        top.grid(row=0, column=0, sticky='ew', pady=(0, p(20)))
+        self.label(top, '控制台', 22, bg_role='bg').pack(side='left')
+        self.state_label = self.label(top, '●  相机已关闭', 10, fg_role='muted', bg_role='bg')
+        self.state_label.pack(side='right', pady=p(8))
+
+        preview_outer = self._new_frame(home, 'line')
+        preview_outer.grid(row=1, column=0, sticky='nsew')
+        preview = self._new_frame(preview_outer, 'surface')
+        preview.pack(fill='both', expand=True, padx=1, pady=1)
+        self.canvas = self._theme_widget(tk.Canvas(preview, bg=self.palette['canvas'], highlightthickness=0), 'canvas')
+        self.canvas.pack(fill='both', expand=True)
+        self.canvas.bind('<Configure>', lambda _: self.render_empty() if self.last_state != 'on' else None)
+
+        action = self._new_frame(home, 'bg')
+        action.grid(row=2, column=0, sticky='ew', pady=(p(20), 0))
+        action.grid_columnconfigure(1, weight=1)
+        self.toggle_button = ttk.Button(action, text='开启相机', style='Accent.TButton', command=self.toggle)
+        self.toggle_button.grid(row=0, column=0, sticky='w')
+        self.wrap_label(self.label(action, 'Ctrl + Alt + G  开启 / 关闭相机', 10, fg_role='muted', bg_role='bg')).grid(
+            row=0, column=1, sticky='ew', padx=p(16))
+        self.feedback = self.label(action, '准备好时按 Ctrl + Alt + G 开始。', 11, bg_role='bg')
+        self.feedback.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(p(14), 0))
+        self.wrap_label(self.feedback)
+        summary = self._new_frame(action, 'bg')
+        summary.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(p(10), 0))
+        ttk.Button(summary, text='进入设置', command=lambda: self.show_page('settings')).pack(side='right', padx=(p(16), 0))
+        self.program_summary = self.label(summary, '', 10, fg_role='muted', bg_role='bg', width=1)
+        self.program_summary.pack(side='left', fill='x', expand=True)
+        self.program_summary.bind('<Configure>', lambda _: self._update_program_summary())
+
+        settings = self._new_frame(self.page_container, 'bg')
+        settings.grid(row=0, column=0, sticky='nsew')
+        self.pages['settings'] = settings
+        settings_content = self.scroll_page(settings)
+        pad = p(32)
+        title = self.label(settings_content, '设置', 22, bg_role='bg')
+        title.pack(fill='x', padx=pad, pady=(p(28), p(6)))
+        self.wrap_label(self.label(settings_content, '选项自动保存。相机运行时，设备和操作设置锁定；外观仍可切换。', 10,
+                   fg_role='muted', bg_role='bg', justify='left')).pack(fill='x', padx=pad, pady=(0, p(22)))
+
+        def section(title_text, description):
+            block = self._new_frame(settings_content, 'bg')
+            block.pack(fill='x', padx=pad, pady=(0, p(26)))
+            self.label(block, title_text, 14, bg_role='bg').pack(anchor='w')
+            self.wrap_label(self.label(block, description, 10, fg_role='muted', bg_role='bg', justify='left')).pack(fill='x', pady=(p(5), p(12)))
+            self._new_separator(block, 'line').pack(fill='x', pady=(0, p(16)))
+            return block
+
+        program_section = section('响指启动程序', '响指识别不依赖声音。选择一个 .exe，识别到响指后启动它。')
+        program_row = self._new_frame(program_section, 'bg')
+        program_row.pack(fill='x')
+        program_row.grid_columnconfigure(0, weight=1)
+        self.path_entry = ttk.Entry(program_row, textvariable=self.program_path)
+        self.path_entry.grid(row=0, column=0, sticky='ew', padx=(0, p(12)))
+        self.browse_button = ttk.Button(program_row, text='选择程序 .exe', command=self.choose_program)
+        self.browse_button.grid(row=0, column=1, sticky='e')
+
+        camera_section = section('相机与隐私', '相机只在你明确开启后使用；关闭相机或退出后释放设备。')
+        camera_row = self._new_frame(camera_section, 'bg')
+        camera_row.pack(fill='x', pady=(0, p(10)))
+        self.label(camera_row, '摄像头编号', 10, bg_role='bg').pack(side='left')
+        self.camera_input = ttk.Spinbox(camera_row, from_=0, to=9, width=4, textvariable=self.camera_index)
+        self.camera_input.pack(side='left', padx=(p(12), 0))
+        self.background_check = ttk.Checkbutton(camera_section, text='允许后台快捷键开启相机', variable=self.background_camera,
+                                                 style='Settings.TCheckbutton')
+        self.background_check.pack(anchor='w')
+        self.auto_check = ttk.Checkbutton(camera_section, text='响指或点击成功后自动关闭相机', variable=self.auto_off,
+                                          style='Settings.TCheckbutton')
+        self.auto_check.pack(anchor='w')
+        self.settings_lock_label = self.label(camera_section, '关闭相机后可修改设置。', 10, fg_role='muted', bg_role='bg')
+        self.settings_lock_label.pack(anchor='w', pady=(p(9), 0))
+
+        debug_section = section('调试与鼠标', '这些选项只影响运行方式，不会改变本地模型或保存相机画面。')
+        self.preview_check = ttk.Checkbutton(debug_section, text='仅预览手势，不控制电脑', variable=self.preview_only,
+                                             style='Settings.TCheckbutton')
+        self.preview_check.pack(anchor='w')
+        self.mouse_check = ttk.Checkbutton(debug_section, text='启用鼠标操作（实验性）', variable=self.mouse_enabled,
+                                           style='Settings.TCheckbutton')
+        self.mouse_check.pack(anchor='w')
+
+        appearance_section = section('外观', '切换界面颜色，不会重启程序，也不会开启或关闭相机。')
+        theme_row = self._new_frame(appearance_section, 'bg')
+        theme_row.pack(fill='x')
+        self.label(theme_row, '主题', 10, bg_role='bg').pack(side='left', padx=(0, p(18)))
+        ttk.Radiobutton(theme_row, text='浅色', value='light', variable=self.theme_var,
+                        style='Theme.TRadiobutton').pack(side='left', padx=(0, p(18)))
+        ttk.Radiobutton(theme_row, text='深色', value='dark', variable=self.theme_var,
+                        style='Theme.TRadiobutton').pack(side='left')
+
+        guide = self._new_frame(self.page_container, 'bg')
+        guide.grid(row=0, column=0, sticky='nsew')
+        self.pages['guide'] = guide
+        guide_content = self.scroll_page(guide)
+        self.label(guide_content, '手势指南', 22, bg_role='bg').pack(fill='x', padx=pad, pady=(p(28), p(6)))
+        self.wrap_label(self.label(guide_content, '当前使用一只手识别。鼠标操作需在设置中启用；「仅预览」会暂停全部电脑操作。', 10,
+                   fg_role='muted', bg_role='bg', justify='left')).pack(fill='x', padx=pad, pady=(0, p(22)))
+        gestures = (
+            ('移动鼠标', '只伸出食指，在画面内移动手指。'),
+            ('左键 / 右键', '收起其他手指，拇指与食指短暂捏合为左键；拇指与中指捏合并保持约 0.4 秒为右键。'),
+            ('上下滚动', '伸出食指和中指，上下移动手部。'),
+            ('打开自选程序', '中指做一次快速弹动，形成响指动作；不要求麦克风声音。'),
+            ('退出程序', '张开手掌，快速向左或向右横扫。'),
+        )
+        for index, (action_name, how) in enumerate(gestures):
+            row = self._new_frame(guide_content, 'bg')
+            row.pack(fill='x', padx=pad, pady=(0, p(16)))
+            self.label(row, action_name, 12, bg_role='bg').pack(anchor='w')
+            self.wrap_label(self.label(row, how, 10, fg_role='muted', bg_role='bg', justify='left')).pack(fill='x', pady=(p(5), p(10)))
+            if index < len(gestures) - 1:
+                self._new_separator(row, 'line').pack(fill='x')
+        self.wrap_label(self.label(guide_content, '快捷键：Ctrl + Alt + G 开启 / 关闭相机；Ctrl + Alt + H 显示窗口；Esc 在窗口内关闭相机。',
+                   10, fg_role='muted', bg_role='bg', justify='left')).pack(fill='x', padx=pad, pady=(0, p(30)))
+
+        footer = self._new_frame(main, 'bg')
+        footer.grid(row=1, column=0, sticky='ew', padx=p(32), pady=(p(6), p(18)))
+        self.notice = self.label(footer, '准备就绪 · 不录音 · 不保存相机画面', 10, fg_role='muted', bg_role='bg')
         self.notice.pack(fill='x')
         self.notice.bind('<Configure>', lambda e: self.notice.config(wraplength=e.width))
+        self.current_page = 'home'
+        self.show_page('home')
+        self._update_program_summary()
+
+    def _update_nav_buttons(self):
+        if not hasattr(self, 'nav_buttons'):
+            return
+        for key, button in self.nav_buttons.items():
+            selected = key == getattr(self, 'current_page', 'home')
+            bg = self.palette['soft'] if selected else self.palette['sidebar']
+            fg = self.palette['accent'] if selected else self.palette['ink']
+            try:
+                button.configure(bg=bg, fg=fg, activebackground=bg,
+                                 activeforeground=fg)
+            except tk.TclError:
+                pass
+
+    def show_page(self, page):
+        """Raise one existing page; no session or camera lifecycle changes."""
+        if page not in self.pages:
+            return
+        self.current_page = page
+        self.pages[page].tkraise()
+        self._update_nav_buttons()
+        if page == 'home' and self.last_state != 'on':
+            self.render_empty()
+
+    def _update_program_summary(self):
+        if not hasattr(self, 'program_summary'):
+            return
+        path = self.program_path.get().strip()
+        name = Path(path).name if path else ''
+        text = f'响指打开：{name or "未选择程序"}'
+        available = self.program_summary.winfo_width() - self._u(8)
+        if available > 0:
+            from tkinter.font import Font
+            font = Font(font=self.program_summary.cget('font'))
+            if font.measure(text) > available:
+                while text and font.measure(text + '…') > available:
+                    text = text[:-1]
+                text += '…'
+        self.program_summary.config(text=text)
+
+    def _set_settings_enabled(self, state):
+        locked = state in ('starting', 'on', 'stopping')
+        controls = (self.camera_input, self.preview_check, self.auto_check,
+                    self.background_check, self.mouse_check, self.browse_button,
+                    self.path_entry)
+        for control in controls:
+            try:
+                control.configure(state='disabled' if locked else 'normal')
+            except tk.TclError:
+                pass
+        if hasattr(self, 'settings_lock_label'):
+            self.settings_lock_label.config(
+                text='相机运行中，关闭相机后可修改设置。' if locked else '设置会自动保存。')
 
     def render_empty(self):
+        if not hasattr(self, 'canvas') or not self.canvas.winfo_exists():
+            return
         self.canvas.delete('all')
         self.photo = None
         w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
         s = self.scale
-        self.canvas.create_rectangle(w/2-32*s, h/2-92*s, w/2+32*s, h/2-48*s, outline=MUTED, width=2*s)
-        self.canvas.create_oval(w/2-12*s, h/2-82*s, w/2+12*s, h/2-58*s, outline=MUTED, width=2*s)
-        self.canvas.create_text(w/2, h/2-8*s, text=STATUS.get(self.session.get_snapshot()['state'], '相机已关闭'), fill=INK, font=('Microsoft YaHei UI', 20))
-        self.canvas.create_text(w/2, h/2+32*s, text='准备好时，按 Ctrl + Alt + G 打开相机', fill=MUTED, font=('Microsoft YaHei UI', 11), width=max(200,w-48*s))
-        self.canvas.create_text(w/2, h/2+68*s, text='关闭后释放摄像头，不保留上一帧画面', fill=MUTED, font=('Microsoft YaHei UI', 10), width=max(200,w-48*s))
+        c = self.palette
+        self.canvas.create_rectangle(w/2-32*s, h/2-92*s, w/2+32*s, h/2-48*s,
+                                     outline=c['muted'], width=max(1, round(2*s)))
+        self.canvas.create_oval(w/2-12*s, h/2-82*s, w/2+12*s, h/2-58*s,
+                                outline=c['muted'], width=max(1, round(2*s)))
+        self.canvas.create_text(w/2, h/2-8*s,
+                                text=STATUS.get(self.session.get_snapshot()['state'], '相机已关闭'),
+                                fill=c['ink'], font=('Microsoft YaHei UI', 20))
+        self.canvas.create_text(w/2, h/2+32*s, text='准备好时，按 Ctrl + Alt + G 打开相机',
+                                fill=c['muted'], font=('Microsoft YaHei UI', 11),
+                                width=max(200, w-48*s))
+        self.canvas.create_text(w/2, h/2+68*s, text='关闭后释放摄像头，不保留上一帧画面',
+                                fill=c['muted'], font=('Microsoft YaHei UI', 10),
+                                width=max(200, w-48*s))
 
     def choose_program(self):
         path = filedialog.askopenfilename(title='选择响指要打开的程序', filetypes=[('Windows 程序', '*.exe')])
         if path:
             self.program_path.set(path)
+            self._update_program_summary()
             self.save_settings()
             self.log(f'响指将打开：{Path(path).name}')
 
@@ -266,7 +569,7 @@ class DesktopApp:
             return
         if self.root.state() in ('withdrawn', 'iconic') and not self.background_camera.get():
             self.show()
-            self.log('后台相机尚未授权。勾选「允许后台使用相机」后，可通过快捷键在后台开启。')
+            self.log('后台相机尚未授权。请到「设置」勾选「允许后台快捷键开启相机」。')
             return
         try:
             self.session.camera_index = self.camera_index.get()
@@ -337,16 +640,18 @@ class DesktopApp:
         state = snap['state']
         if state != self.last_state:
             self.last_state = state
-            self.state_label.config(text='●  ' + STATUS.get(state, state),
-                                    fg=ACCENT if state == 'on' else '#a24925' if state == 'error' else MUTED)
+            state_color = self.palette['accent'] if state == 'on' else self.palette['danger'] if state == 'error' else self.palette['muted']
+            state_text = '●  ' + STATUS.get(state, state)
+            self.state_label.config(text=state_text, fg=state_color)
+            self.nav_state_label.config(text=state_text, fg=state_color)
             button_text = {'off': '开启相机', 'on': '关闭相机', 'starting': '取消开启', 'stopping': '正在关闭…', 'error': '重试打开相机'}
             self.toggle_button.config(text=button_text.get(state, '开启相机'), state='disabled' if state == 'stopping' else 'normal')
-            for control in (self.camera_input,self.preview_check,self.auto_check,self.background_check,self.mouse_check,self.browse_button,self.path_entry):
-                control.config(state='disabled' if state in ('starting','on','stopping') else 'normal')
+            self._set_settings_enabled(state)
             self.tray.update(state)
-            if state != 'on': self.render_empty()
+            if state != 'on':
+                self.render_empty()
         image = snap.get('image')
-        if state == 'on' and image is not None and self.root.state() != 'withdrawn':
+        if state == 'on' and image is not None and self.current_page == 'home' and self.root.state() not in ('withdrawn', 'iconic'):
             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             picture = Image.fromarray(rgb)
             ratio = min(max(1, self.canvas.winfo_width()) / picture.width,

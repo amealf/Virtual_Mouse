@@ -1,12 +1,12 @@
 # MediaPipe Gesture Controller
 
-Version 0.2.0 is a local Windows desktop app for hand-gesture control. The
-desktop app starts with the camera off. You can keep the app in the
-notification area and turn camera capture on only when you need it.
+Version 0.2.1 is a local Windows desktop app for hand-gesture control. This
+release reorganizes the interface into three pages while keeping the camera,
+gesture, and background behavior unchanged.
 
 ## Install
 
-For the packaged build, run `GestureController-Setup-0.2.0-x64.exe` and open
+For the packaged build, run `GestureController-Setup-0.2.1-x64.exe` and open
 `MediaPipe Gesture Controller` from the desktop or Start menu.
 
 To run from source, create the project environment and install the pinned
@@ -33,14 +33,21 @@ The equivalent command is:
 .\.venv\Scripts\python.exe desktop_app.py
 ```
 
-The app opens its control panel without opening the camera. The panel is in
-Chinese, and the gesture recognition and system status messages are shown in
-the interface.
+The app opens with camera capture disabled. For first-time or unconfigured
+users, mouse control also starts disabled; after you enable and save it, that
+choice is retained on later launches. The Chinese desktop window has three pages:
+
+- `控制台`: camera preview, camera switch, current feedback, and a short
+  summary of the selected program.
+- `手势指南`: the available gestures and their actions.
+- `设置`: selected `.exe` program, background-camera authorization, mouse
+  control, preview-only mode, auto-off, camera index, and appearance theme.
 
 Global hotkeys work while the window is hidden or in the background. To open
-the camera while the panel is hidden/minimized, first enable the unchecked
-`允许后台使用相机` option yourself. Without that consent, the hotkey shows the
-panel and leaves camera capture off. Camera-off always works without consent.
+the camera while the panel is hidden or minimized, enable `允许后台快捷键开启相机`
+in `设置` first. The consent option is off by default; without it, the hotkey
+shows the panel and leaves camera capture off. Camera-off always works without
+consent.
 
 | Hotkey | Action |
 | --- | --- |
@@ -48,10 +55,10 @@ panel and leaves camera capture off. Camera-off always works without consent.
 | `Ctrl+Alt+H` | Show the control panel |
 | `Esc` in the panel | Close the camera |
 
-Clicking the window close button (`X`) stops the camera and hides the panel in
-the notification area. The tray menu can show the panel, toggle or close the
-camera, and exit the application. Exiting the application releases the
-camera before the process closes.
+Clicking `关闭相机并收起` (`X`) stops the camera and hides the panel in the
+notification area. The tray menu can show the panel, toggle or close the
+camera, and exit the application. Exiting the application releases the camera
+before the process closes.
 
 The launcher also accepts these diagnostic options:
 
@@ -62,8 +69,8 @@ The launcher also accepts these diagnostic options:
 ```
 
 `--background` starts with the panel hidden in the tray. `--preview-only`
-tracks gestures without moving the pointer, clicking, scrolling, launching
-Codex, or exiting on a swipe. `--test-seconds` closes the app after the given
+tracks gestures without moving the pointer, clicking, scrolling, launching a
+program, or exiting on a swipe. `--test-seconds` closes the app after the given
 time.
 
 `main.py` is retained as a legacy diagnostic runner. It opens the camera as
@@ -73,11 +80,11 @@ mode is also legacy diagnostic behavior; use `desktop_app.py` or
 
 ## Gestures
 
-The current controller uses one control hand:
-
-Mouse control is experimental and **off by default**. Enable
-`启用鼠标操作（实验性）` to allow pointer, click, and scroll actions. Snap-to-launch
-and swipe-to-exit work without mouse control. `仅预览手势` disables all actions.
+The current controller uses one control hand. Mouse control is experimental.
+For first-time or unconfigured users it starts off; enable and save
+`启用鼠标操作（实验性）` in `设置` to allow pointer,
+click, and scroll actions. Snap-to-launch and swipe-to-exit remain separate
+gesture actions. `仅预览手势` disables all operating-system actions.
 
 | Gesture | Action |
 | --- | --- |
@@ -85,7 +92,7 @@ and swipe-to-exit work without mouse control. `仅预览手势` disables all act
 | Brief thumb-index pinch, other fingers folded | Left click |
 | Thumb-middle pinch held for about 0.4 seconds, other fingers folded | Right click |
 | Index and middle fingers raised, then move vertically | Scroll |
-| Rapid inward middle-finger movement relative to the palm | Launch your selected `.exe` program |
+| Rapid inward middle-finger movement relative to the palm | Launch the selected `.exe` program |
 | Open-palm horizontal swipe | Request application exit |
 
 The snap detector uses visual finger motion. It does not require a sound, and
@@ -99,10 +106,12 @@ the swipe exit request.
 
 ## Privacy and settings
 
-Camera capture starts only after the start button, `Ctrl+Alt+G`, or the tray
-toggle is used. Turning the camera off immediately clears the retained preview
-frame and asks the worker to release the camera. The app does not record video
-or use a microphone during normal operation.
+Camera capture starts off on every launch and only starts after the start
+button, `Ctrl+Alt+G`, or the tray toggle is used. Mouse control starts off for
+first-time or unconfigured users and retains a saved enabled choice on later
+launches. Background-camera authorization is off by default. Turning the camera off
+clears the retained preview frame and asks the worker to release the camera.
+The app does not record video or use a microphone during normal operation.
 
 The desktop app stores its settings at:
 
@@ -110,29 +119,18 @@ The desktop app stores its settings at:
 %LOCALAPPDATA%\MediaPipeGestureController\settings.json
 ```
 
-Saved settings include the camera index, preview-only mode, auto-off mode,
-background-camera consent, and the selected executable path. Use the
-`选择程序 .exe` button to choose any local Windows program. No target is
-chosen automatically. Background-camera consent does not enable capture on
-startup: the camera always starts off.
+Existing user settings are retained when upgrading. The settings page stores
+the selected camera index, preview-only mode, auto-off mode, background-camera
+authorization, mouse-control switch, selected executable path, and appearance
+theme. Choose `浅色` or `深色` under `设置 → 外观`. The choice is remembered
+for the next launch. Switching themes takes effect without restarting the app
+and does not change the camera state. No program is selected automatically; use
+`选择程序 .exe` to choose a local Windows program for the snap gesture.
 
-Minimizing without background-camera consent stops capture. The `X` button
-and `关闭相机并收起` always stop capture before hiding the panel. After granting
-consent, use `Ctrl+Alt+G` while the panel is hidden to open the camera without
-showing a preview window. The tray icon changes to show camera activity.
-
-## Recorded-video tuning
-
-Two supplied clips were replayed locally through MediaPipe. The first clip
-produced 5 snap events (baseline: 3); the second produced 4 swipe events
-(baseline: 0) and no snap events (baseline: 1). These are event counts from
-tuning clips, not a held-out accuracy score. The first clip still produced
-unlabeled click events, which is why mouse actions require separate opt-in.
-Private recordings and extracted landmarks are not included in the release.
-
-`tools/replay_video.py` can replay local video files without opening a camera
-or executing any desktop actions. It writes event timestamps and landmarks
-to the chosen output directory.
+Minimizing without background-camera authorization stops capture. The
+`关闭相机并收起` (`X`) button always stops capture before hiding the panel. After
+granting authorization, `Ctrl+Alt+G` can open the camera while the panel is
+hidden, without showing a preview window.
 
 ## Build the Windows installer
 
@@ -142,12 +140,12 @@ The build script creates the PyInstaller bundle and invokes Inno Setup:
 .\build_windows.ps1 -InnoCompiler "C:\Path\To\ISCC.exe"
 ```
 
-The bundled application is written to `dist-v0.2.0`, and the installer is
-written to `dist` as `GestureController-Setup-0.2.0-x64.exe`.
+The bundled application is written to `dist-v0.2.1`, and the installer is
+written to `dist` as `GestureController-Setup-0.2.1-x64.exe`.
 
 ## Project files
 
-- `desktop_app.py`: Tk desktop panel, tray integration, and UI polling
+- `desktop_app.py`: Tk desktop panel, three-page UI, tray integration, and UI polling
 - `camera_session.py`: threaded camera lifecycle and gesture dispatch
 - `native_services.py`: global hotkeys, single-instance guard, and tray menu
 - `hand_tracker.py`: MediaPipe hand landmark tracking
